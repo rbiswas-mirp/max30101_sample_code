@@ -1,0 +1,125 @@
+/*
+  MAX30101 Biometric Sensor Averaging (Improved Version)
+
+  Changes in this version:
+  1. Configurable confidence threshold (default > 70).
+  2. Uses millis() timing without drift.
+  3. Keeps top 5 readings sorted by confidence (highest first).
+  4. Only averages when 5 high-confidence readings are available.
+  5. Avoids unnecessary resets, preserving data until full set is collected.
+  6. Pins and constants made 'const' to prevent accidental changes.
+  7. Waits for first valid reading before starting average loop.
+
+  Original Author: Elias Santistevan / SparkFun Electronics
+  Modified By: Google's Gemini
+  Improved By: ChatGPT
+  Date: 8/2025
+*/
+
+#include <SparkFun_Bio_Sensor_Hub_Library.h>
+#include <Wire.h>
+
+// ================= CONFIGURATION =================
+const int resPin = 4;
+const int mfioPin = 5;
+const int CONF_THRESHOLD = 70;      // Confidence threshold for valid readings
+const int PULSE_WIDTH = 411;        // Pulse width in µs
+const int SAMPLE_RATE = 400;        // Samples per second
+const int NUM_READINGS = 5;         // Number of top readings to average
+const long REPORT_INTERVAL = 1000;  // Report every 1s (ms)
+// =================================================
+
+// Sensor object
+SparkFun_Bio_Sensor_Hub bioHub(resPin, mfioPin);
+bioData body; // Latest reading
+
+// Array for top readings (highest confidence first)
+bioData topReadings[NUM_READINGS];
+int validReadingsCount = 0;
+
+unsigned long lastReportTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // Start sensor
+  if (bioHub.begin() == 0) Serial.println("Sensor started!");
+  else Serial.println("Sensor failed to start!");
+
+  Serial.println("Configuring sensor...");
+  if (bioHub.configSensorBpm(MODE_ONE) == 0) Serial.println("Sensor configured.");
+  else Serial.println("Error configuring sensor.");
+
+  // Set pulse width
+  if (bioHub.setPulseWidth(PULSE_WIDTH) == 0) Serial.println("Pulse Width Set.");
+  else Serial.println("Error setting Pulse Width.");
+  Serial.print("Pulse Width: "); Serial.println(bioHub.readPulseWidth());
+
+  // Set sample rate
+  if (bioHub.setSampleRate(SAMPLE_RATE) == 0) Serial.println("Sample Rate Set.");
+  else Serial.println("Error setting Sample Rate!");
+  Serial.print("Sample rate is set to: "); Serial.println(bioHub.readSampleRate());
+
+  // Initialize topReadings with zero confidence
+  for (int i = 0; i < NUM_READINGS; i++) {
+    topReadings[i].confidence = 0;
+    topReadings[i].heartRate = 0;
+    topReadings[i].oxygen = 0;
+  }
+
+  Serial.println("\nWaiting for first valid reading (confidence > threshold)...");
+}
+
+void loop() {
+  // Read sensor
+  body = bioHub.readSensorBpm();
+
+  // Store if confidence above threshold
+  if (body.confidence > CONF_THRESHOLD) {
+    insertSorted(body);
+    if (validReadingsCount < NUM_READINGS) validReadingsCount++;
+  }
+
+  // Only report when full set collected
+  if (validReadingsCount == NUM_READINGS && millis() - lastReportTime >= REPORT_INTERVAL) {
+    lastReportTime += REPORT_INTERVAL; // no drift
+
+    float totalHR = 0;
+    float totalSpO2 = 0;
+
+    for (int i = 0; i < NUM_READINGS; i++) {
+      totalHR += topReadings[i].heartRate;
+      totalSpO2 += topReadings[i].oxygen;
+    }
+
+    Serial.println("----------------------------------------");
+    Serial.print("Time: "); Serial.print(millis() / 1000); Serial.println("s");
+    Serial.println("Averaged Report (Top 5 Readings):");
+    Serial.print("Average Heart Rate: "); Serial.println(totalHR / NUM_READINGS, 2);
+    Serial.print("Average SpO2: "); Serial.println(totalSpO2 / NUM_READINGS, 2);
+    Serial.println("----------------------------------------");
+
+    // Reset for next set
+    validReadingsCount = 0;
+    for (int i = 0; i < NUM_READINGS; i++) {
+      topReadings[i].confidence = 0;
+      topReadings[i].heartRate = 0;
+      topReadings[i].oxygen = 0;
+    }
+  }
+}
+
+// Insert new reading into sorted array by confidence (highest first)
+void insertSorted(bioData newReading) {
+  for (int i = 0; i < NUM_READINGS; i++) {
+    if (newReading.confidence > topReadings[i].confidence) {
+      // Shift elements down
+      for (int j = NUM_READINGS - 1; j > i; j--) {
+        topReadings[j] = topReadings[j - 1];
+      }
+      topReadings[i] = newReading;
+      break;
+    }
+  }
+}
